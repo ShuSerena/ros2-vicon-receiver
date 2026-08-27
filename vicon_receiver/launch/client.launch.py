@@ -1,3 +1,6 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -46,6 +49,12 @@ def generate_launch_description():
         default_value='false',
         description='Whether RPY values are in degrees (true) or radians (false)'
     )
+    config_file_arg = DeclareLaunchArgument(
+        'config_file',
+        default_value=os.path.join(
+            get_package_share_directory('vicon_receiver'), 'config', 'vicon.yaml'),
+        description='YAML parameter file (holds origin_subject)'
+    )
 
     # Get launch configuration values
     hostname = LaunchConfiguration('hostname')
@@ -56,6 +65,7 @@ def generate_launch_description():
     map_xyz = LaunchConfiguration('map_xyz')
     map_rpy = LaunchConfiguration('map_rpy')
     map_rpy_in_degrees = LaunchConfiguration('map_rpy_in_degrees')
+    config_file = LaunchConfiguration('config_file')
 
     return LaunchDescription([
         # Launch arguments
@@ -67,13 +77,14 @@ def generate_launch_description():
         map_xyz_arg,
         map_rpy_arg,
         map_rpy_in_degrees_arg,
+        config_file_arg,
         
         # Node
         Node(
             package='vicon_receiver', 
             executable='vicon_client', 
             output='screen',
-            parameters=[{
+            parameters=[config_file, {
                 'hostname': hostname, 
                 'buffer_size': buffer_size, 
                 'namespace': topic_namespace,

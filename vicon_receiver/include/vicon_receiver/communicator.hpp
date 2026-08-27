@@ -16,7 +16,7 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 
 #include "tf2/LinearMath/Quaternion.h"
-// #include "tf2/LinearMath/Transform.h"
+#include "tf2/LinearMath/Transform.h"
 
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/static_transform_broadcaster.h"
@@ -44,10 +44,17 @@ private:
   vector<double> map_rpy;
   bool map_rpy_in_degrees;
 
+  // Name of the tracked body whose pose at startup becomes the world origin.
+  string origin_subject;
+  bool origin_latched_ = false;
+
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   void publish_static_transform();
+
+  // Make boot, a pose measured in the vicon frame, the origin of the world frame.
+  void latch_origin(const geometry_msgs::msg::Transform & boot);
 
 public:
   Communicator();

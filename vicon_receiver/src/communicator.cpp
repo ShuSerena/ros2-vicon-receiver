@@ -14,6 +14,7 @@ Communicator::Communicator() : Node("vicon_client")
   this->declare_parameter<std::vector<double>>("map_xyz", {0.0, 0.0, 0.0});
   this->declare_parameter<std::vector<double>>("map_rpy", {0.0, 0.0, 0.0});
   this->declare_parameter<bool>("map_rpy_in_degrees", false);
+  this->declare_parameter<std::string>("origin_subject", "");
 
   // Retrieve parameters values
   this->get_parameter("hostname", hostname);
@@ -25,6 +26,15 @@ Communicator::Communicator() : Node("vicon_client")
   this->get_parameter("map_xyz", map_xyz);
   this->get_parameter("map_rpy", map_rpy);
   this->get_parameter("map_rpy_in_degrees", map_rpy_in_degrees);
+  this->get_parameter("origin_subject", origin_subject);
+
+  // Required: without it the node would silently publish raw vicon coordinates, and a drone
+  // flying against a frame it did not expect is worse than a node that refuses to start.
+  if (origin_subject.empty())
+  {
+    RCLCPP_FATAL(this->get_logger(), "origin_subject must name the drone's vicon subject");
+    throw std::runtime_error("missing origin_subject");
+  }
 
   // Publish static transform from map to vicon origin
   if (map_rpy_in_degrees)
@@ -39,6 +49,9 @@ Communicator::Communicator() : Node("vicon_client")
 
   // Initialize the tf2 broadcaster
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+
+  RCLCPP_INFO(
+    this->get_logger(), "Waiting for '%s' to set the world origin", origin_subject.c_str());
 }
 
 // Publish the static transform from map to vicon origin
@@ -65,6 +78,42 @@ void Communicator::publish_static_transform()
 
   string msg = "Published static transform from " + world_frame + " to " + vicon_frame;
   cout << msg << endl;
+}
+
+// Make boot, a pose measured in the vicon frame, the origin of the world frame.
+//
+// Every published pose is run through the static world_frame -> vicon_frame transform, so setting
+// that transform to boot's inverse re-expresses all of them relative to boot:
+//   p_world = R_boot^T (p_vicon - p_boot),   q_world = q_boot^-1 * q_vicon
+// Boot itself therefore comes out as (0,0,0) / (0,0,0,1).
+void Communicator::latch_origin(const geometry_msgs::msg::Transform & boot)
+{
+  const tf2::Quaternion q(boot.rotation.x, boot.rotation.y, boot.rotation.z, boot.rotation.w);
+
+  // An occluded rotation comes through as (0,0,0,0). tf2 divides by its squared norm without
+  // checking, so inverting it would give a NaN origin that never recovers.
+  if (q.length2() <= 0.0)
+  {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 2000,
+      "'%s' reported a zero rotation; ignoring this frame", origin_subject.c_str());
+    return;
+  }
+
+  const tf2::Transform vicon_T_boot(
+    q, tf2::Vector3(boot.translation.x, boot.translation.y, boot.translation.z));
+
+  static_tf.header.stamp = this->get_clock()->now();
+  static_tf.header.frame_id = world_frame;
+  static_tf.child_frame_id = vicon_frame;
+  static_tf.transform = tf2::toMsg(vicon_T_boot.inverse());
+
+  tf_static_broadcaster_->sendTransform(static_tf);
+  origin_latched_ = true;
+
+  RCLCPP_INFO(
+    this->get_logger(), "World origin set from '%s' at vicon xyz [%.4f %.4f %.4f]",
+    origin_subject.c_str(), boot.translation.x, boot.translation.y, boot.translation.z);
 }
 
 // Connect to the Vicon server
@@ -153,16 +202,26 @@ void Communicator::get_frame()
   vicon_client.GetFrame();
   Output_GetFrameNumber frame_number = vicon_client.GetFrameNumber();
 
+  cout << "frame number: " << frame_number.FrameNumber << endl;
+
   // Get the number of subjects in the frame
   unsigned int subject_count = vicon_client.GetSubjectCount().SubjectCount;
 
   map<string, Publisher>::iterator pub_it;
+
+  // Collected only while waiting, so a misspelled origin_subject names its alternatives.
+  string seen_subjects;
 
   // Iterate through each subject
   for (unsigned int subject_index = 0; subject_index < subject_count; ++subject_index)
   {
     // Get the subject name
     string subject_name = vicon_client.GetSubjectName(subject_index).SubjectName;
+
+    if (!origin_latched_)
+    {
+      seen_subjects += (seen_subjects.empty() ? "" : ", ") + subject_name;
+    }
 
     // Get the number of segments for the subject
     unsigned int segment_count = vicon_client.GetSegmentCount(subject_name).SegmentCount;
@@ -200,6 +259,24 @@ void Communicator::get_frame()
       tf_msg.transform.rotation.z = quat.Rotation[2];
       tf_msg.transform.rotation.w = quat.Rotation[3];
 
+      cout << "Received segment data for " << subject_name << "/" << segment_name
+           << ": translation = [" << tf_msg.transform.translation.x << ", "
+           << tf_msg.transform.translation.y << ", "
+           << tf_msg.transform.translation.z << "], rotation = ["
+           << tf_msg.transform.rotation.x << ", "
+           << tf_msg.transform.rotation.y << ", "
+           << tf_msg.transform.rotation.z << ", "
+           << tf_msg.transform.rotation.w << "]" << endl;
+
+      // Set the world origin from the drone's first clean pose. Translation and rotation carry
+      // separate occlusion flags, and an occluded pose would pin the origin to junk.
+      if (!origin_latched_ && !trans.Occluded && !quat.Occluded &&
+          (origin_subject == subject_name ||
+           origin_subject == subject_name + "/" + segment_name))
+      {
+        latch_origin(tf_msg.transform);
+      }
+
       // Publish the position data
       boost::mutex::scoped_try_lock lock(mutex);
       if (lock.owns_lock())
@@ -210,7 +287,7 @@ void Communicator::get_frame()
         {
           Publisher &pub = pub_it->second;
 
-          if (pub.is_ready)
+          if (pub.is_ready && origin_latched_)
           {
             // Build a PoseStamped in the Vicon frame from the computed TransformStamped.
             geometry_msgs::msg::PoseStamped vicon_pose_msg;
@@ -235,10 +312,12 @@ void Communicator::get_frame()
 
             // Publish the transformed pose
             pub.publish(global_pose_msg);
+            cout << "Published vicon_pose_msg: [" << vicon_pose_msg.pose.position.x << ", " << vicon_pose_msg.pose.position.y << ", " << vicon_pose_msg.pose.position.z << "]" << endl;
           }
         }
         else
         {
+          cout << "No publisher found for segment " << segment_name << ", creating one..." << endl;
           // Create a publisher if it doesn't exist, de-duplicating concurrent attempts
           std::string key = subject_name + "/" + segment_name;
           if (pending_publishers.find(key) == pending_publishers.end())
@@ -258,6 +337,14 @@ void Communicator::get_frame()
       // Broadcast the transform
       tf_broadcaster_->sendTransform(tf_msg);
     }
+  }
+
+  if (!origin_latched_)
+  {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 2000,
+      "Waiting for a clean pose of '%s'; nothing published yet. Subjects seen: [%s]",
+      origin_subject.c_str(), seen_subjects.c_str());
   }
 }
 
