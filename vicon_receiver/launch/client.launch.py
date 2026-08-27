@@ -1,6 +1,3 @@
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -49,11 +46,11 @@ def generate_launch_description():
         default_value='false',
         description='Whether RPY values are in degrees (true) or radians (false)'
     )
-    config_file_arg = DeclareLaunchArgument(
-        'config_file',
-        default_value=os.path.join(
-            get_package_share_directory('vicon_receiver'), 'config', 'vicon.yaml'),
-        description='YAML parameter file (holds origin_subject)'
+    origin_subject_arg = DeclareLaunchArgument(
+        'origin_subject',
+        default_value='',
+        description='Vicon subject name of the drone; its pose at startup becomes the world '
+                    'origin. Required.'
     )
 
     # Get launch configuration values
@@ -65,7 +62,7 @@ def generate_launch_description():
     map_xyz = LaunchConfiguration('map_xyz')
     map_rpy = LaunchConfiguration('map_rpy')
     map_rpy_in_degrees = LaunchConfiguration('map_rpy_in_degrees')
-    config_file = LaunchConfiguration('config_file')
+    origin_subject = LaunchConfiguration('origin_subject')
 
     return LaunchDescription([
         # Launch arguments
@@ -77,14 +74,14 @@ def generate_launch_description():
         map_xyz_arg,
         map_rpy_arg,
         map_rpy_in_degrees_arg,
-        config_file_arg,
+        origin_subject_arg,
         
         # Node
         Node(
             package='vicon_receiver', 
             executable='vicon_client', 
             output='screen',
-            parameters=[config_file, {
+            parameters=[{
                 'hostname': hostname, 
                 'buffer_size': buffer_size, 
                 'namespace': topic_namespace,
@@ -92,7 +89,8 @@ def generate_launch_description():
                 'vicon_frame': vicon_frame,
                 'map_xyz': map_xyz,
                 'map_rpy': map_rpy,
-                'map_rpy_in_degrees': map_rpy_in_degrees
+                'map_rpy_in_degrees': map_rpy_in_degrees,
+                'origin_subject': origin_subject
             }]
         )
     ])

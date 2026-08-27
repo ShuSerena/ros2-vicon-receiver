@@ -1,6 +1,6 @@
 #ifndef PUBLISHER_HPP
 #define PUBLISHER_HPP
-#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include <unistd.h>
 
@@ -8,16 +8,16 @@
 class Publisher
 {
 private:
-  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr position_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr position_publisher_;
 
 public:
   bool is_ready = false;
 
   Publisher(std::string topic_name, rclcpp::Node *node);
 
-  // Publishes the given position in the ROS2 topic whose name is indicated in
+  // Publishes the given odometry in the ROS2 topic whose name is indicated in
   // the constructor.
-  void publish(geometry_msgs::msg::PoseStamped p);
+  void publish(nav_msgs::msg::Odometry odom);
 };
 
 #endif
