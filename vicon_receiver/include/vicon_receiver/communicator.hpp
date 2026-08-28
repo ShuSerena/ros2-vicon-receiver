@@ -51,10 +51,10 @@ private:
   string origin_subject;
 
   // Stream health, measured from vicon's own frame counter rather than wall-clock arrival times.
-  double expected_rate_hz;
-  double rate_warn_fraction;
-  double rate_clear_fraction;
-  double rate_window_seconds;
+  double expected_rate_hz = 200.0;
+  double rate_warn_fraction = 0.8;
+  double rate_clear_fraction = 0.9;
+  double rate_window_seconds = 1.0;
 
   unsigned int last_frame_number_ = 0;
   rclcpp::Time window_start_;
@@ -65,14 +65,14 @@ private:
 
   // Blackout watchdog. get_frame() blocks in ClientPull, so a dead vicon PC stops the main loop
   // entirely and nothing there can report it. This runs on its own thread so it still fires.
-  double blackout_timeout_seconds;
+  double blackout_timeout_seconds = 0.5;
   std::atomic<int64_t> last_frame_ns_{0};   // 0 = no frame yet, so connect() cannot trip it
   std::atomic<bool> watchdog_running_{false};
   bool blackout_warned_ = false;
   boost::thread watchdog_thread_;
 
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticStatus>::SharedPtr status_publisher_;
-  double origin_min_distance;
+  double origin_min_distance = 0.01;
   bool origin_latched_ = false;
 
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;

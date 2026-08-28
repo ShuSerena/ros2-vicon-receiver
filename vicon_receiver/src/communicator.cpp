@@ -19,10 +19,10 @@ Communicator::Communicator() : Node("vicon_client")
   this->declare_parameter<std::string>("origin_subject", "");
   this->declare_parameter<double>("origin_min_distance", 0.01);
   this->declare_parameter<double>("expected_rate_hz", 200.0);
-  this->declare_parameter<double>("rate_warn_fraction", 0.8);
-  this->declare_parameter<double>("rate_clear_fraction", 0.9);
+  this->declare_parameter<double>("rate_warn_fraction", 0.5);
+  this->declare_parameter<double>("rate_clear_fraction", 0.6);
   this->declare_parameter<double>("rate_window_seconds", 1.0);
-  this->declare_parameter<double>("blackout_timeout_seconds", 0.5);
+  this->declare_parameter<double>("blackout_timeout_seconds", 0.05);
 
   // Retrieve parameters values
   this->get_parameter("hostname", hostname);
@@ -44,17 +44,14 @@ Communicator::Communicator() : Node("vicon_client")
 
   // Required: without it the node would silently publish raw vicon coordinates, and a drone
   // flying against a frame it did not expect is worse than a node that refuses to start.
-  if (origin_subject.empty())
-  {
+  if (origin_subject.empty()) {
     RCLCPP_FATAL(this->get_logger(), "origin_subject must name the drone's vicon subject");
     throw std::runtime_error("missing origin_subject");
   }
 
   // Publish static transform from map to vicon origin
-  if (map_rpy_in_degrees)
-  {
-    for (unsigned int i = 0; i < map_rpy.size(); i++)
-    {
+  if (map_rpy_in_degrees) {
+    for (unsigned int i = 0; i < map_rpy.size(); i++) {
       map_rpy[i] = map_rpy[i] * M_PI / 180.0;
     }
   }
@@ -78,8 +75,7 @@ Communicator::Communicator() : Node("vicon_client")
 Communicator::~Communicator()
 {
   watchdog_running_ = false;
-  if (watchdog_thread_.joinable())
-  {
+  if (watchdog_thread_.joinable()) {
     watchdog_thread_.join();
   }
 }
@@ -88,20 +84,17 @@ Communicator::~Communicator()
 // stops answering, get_frame() never returns and nothing inside it can raise the alarm.
 void Communicator::watchdog_loop()
 {
-  while (watchdog_running_ && rclcpp::ok())
-  {
+  while (watchdog_running_ && rclcpp::ok()) {
     boost::this_thread::sleep_for(boost::chrono::milliseconds(50));
 
     const int64_t last = last_frame_ns_.load();
-    if (last == 0)
-    {
-      continue;  // nothing received yet; connecting is not a blackout
+    if (last == 0) {
+      continue; // nothing received yet; connecting is not a blackout
     }
 
     const double silent = (this->get_clock()->now().nanoseconds() - last) / 1e9;
 
-    if (!blackout_warned_ && silent > blackout_timeout_seconds)
-    {
+    if (!blackout_warned_ && silent > blackout_timeout_seconds) {
       blackout_warned_ = true;
       RCLCPP_ERROR(
         this->get_logger(), "Vicon blackout: no frame for %.2f s (expected one every %.1f ms)",
@@ -117,11 +110,9 @@ void Communicator::watchdog_loop()
       kv.value = std::to_string(silent);
       status.values.push_back(kv);
       status_publisher_->publish(status);
-    }
-    else if (blackout_warned_ && silent < blackout_timeout_seconds)
-    {
+    } else if (blackout_warned_ && silent < blackout_timeout_seconds) {
+      // Re-arm silently. Without this reset only the first blackout of a run would be reported.
       blackout_warned_ = false;
-      RCLCPP_INFO(this->get_logger(), "Vicon frames resumed after %.2f s", silent);
     }
   }
 }
@@ -158,7 +149,7 @@ void Communicator::publish_static_transform()
 // that transform to boot's inverse re-expresses all of them relative to boot:
 //   p_world = R_boot^T (p_vicon - p_boot),   q_world = q_boot^-1 * q_vicon
 // Boot itself therefore comes out as (0,0,0) / (0,0,0,1).
-void Communicator::latch_origin(const geometry_msgs::msg::Transform & boot)
+void Communicator::latch_origin(const geometry_msgs::msg::Transform& boot)
 {
   const tf2::Quaternion q(boot.rotation.x, boot.rotation.y, boot.rotation.z, boot.rotation.w);
   const tf2::Vector3 p(boot.translation.x, boot.translation.y, boot.translation.z);
@@ -168,8 +159,7 @@ void Communicator::latch_origin(const geometry_msgs::msg::Transform & boot)
   // vicon origin, and a zero rotation would invert to NaN, neither of which ever recovers.
   const double qn = q.length2();
   if (p.length2() < origin_min_distance * origin_min_distance || !std::isfinite(qn) ||
-      std::abs(qn - 1.0) > 1e-3)
-  {
+      std::abs(qn - 1.0) > 1e-3) {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 2000,
       "'%s' is not tracked yet: xyz [%.4f %.4f %.4f], |q|^2 %.4f - not latching",
@@ -201,18 +191,15 @@ bool Communicator::connect()
 
   int counter = 0;
   // Retry connection until successful
-  while (!vicon_client.IsConnected().Connected && rclcpp::ok())
-  {
+  while (!vicon_client.IsConnected().Connected && rclcpp::ok()) {
     bool ok = (vicon_client.Connect(hostname).Result == Result::Success);
-    if (!ok)
-    {
+    if (!ok) {
       counter++;
       msg = "Connect failed, reconnecting (" + std::to_string(counter) + ")...";
       cout << msg << endl;
     }
   }
-  if (!rclcpp::ok())
-  {
+  if (!rclcpp::ok()) {
     std::cout << "Shutdown requested before connection established." << std::endl;
     return false;
   }
@@ -276,9 +263,9 @@ bool Communicator::disconnect()
 // read it in time" - in ClientPull the client sets the pace, so a slow loop silently skips frames.
 void Communicator::monitor_stream(unsigned int frame_number)
 {
-  if (last_frame_number_ == 0)
-  {
+  if (last_frame_number_ == 0) {
     last_frame_number_ = frame_number;
+    last_frame_ns_ = this->get_clock()->now().nanoseconds();
     return;
   }
 
@@ -287,8 +274,10 @@ void Communicator::monitor_stream(unsigned int frame_number)
 
   // Only a counter reset (tracker restart, or wrap) invalidates the window. A large positive
   // jump is a real dropout and must be reported, not swallowed.
-  if (advance < 0)
-  {
+  if (advance < 0) {
+    // The counter moved, so data did arrive: the stream is alive even though this window is
+    // no longer measurable. Not refreshing the watchdog here would report a permanent blackout.
+    last_frame_ns_ = this->get_clock()->now().nanoseconds();
     window_frames_ = 0;
     window_advance_ = 0;
     window_worst_gap_ = 0;
@@ -299,16 +288,17 @@ void Communicator::monitor_stream(unsigned int frame_number)
   // The same frame served twice is not new data: counting it would make a stalled stream, where
   // GetFrame keeps returning the last frame, look healthy. Skip the counters but still fall
   // through to the window check, or a total stall would never close a window and never warn.
-  if (advance > 0)
-  {
+  if (advance > 0) {
+    // Only a new frame counts as the stream being alive. Refreshing this on every loop
+    // iteration would let a stalled vicon, still serving the last frame, look healthy.
+    last_frame_ns_ = this->get_clock()->now().nanoseconds();
     window_frames_++;
     window_advance_ += static_cast<unsigned int>(advance);
     window_worst_gap_ = std::max(window_worst_gap_, static_cast<unsigned int>(advance));
   }
 
   const double elapsed = (this->get_clock()->now() - window_start_).seconds();
-  if (elapsed < rate_window_seconds)
-  {
+  if (elapsed < rate_window_seconds) {
     return;
   }
 
@@ -316,12 +306,11 @@ void Communicator::monitor_stream(unsigned int frame_number)
   const double delivered = window_frames_ / (elapsed * expected_rate_hz);
   // Fraction of the frames vicon actually produced that we managed to read.
   const double kept_up = window_advance_ > 0
-    ? window_frames_ / static_cast<double>(window_advance_)
-    : 0.0;
+                           ? window_frames_ / static_cast<double>(window_advance_)
+                           : 0.0;
   const double worst_gap_ms = 1000.0 * window_worst_gap_ / expected_rate_hz;
 
-  if (!stream_degraded_ && delivered < rate_warn_fraction)
-  {
+  if (!stream_degraded_ && delivered < rate_warn_fraction) {
     stream_degraded_ = true;
     RCLCPP_WARN(
       this->get_logger(),
@@ -329,9 +318,7 @@ void Communicator::monitor_stream(unsigned int frame_number)
       "produced; worst gap %u frames (%.0f ms)",
       100.0 * delivered, expected_rate_hz, window_frames_, elapsed, 100.0 * kept_up,
       window_worst_gap_, worst_gap_ms);
-  }
-  else if (stream_degraded_ && delivered > rate_clear_fraction)
-  {
+  } else if (stream_degraded_ && delivered > rate_clear_fraction) {
     stream_degraded_ = false;
     RCLCPP_INFO(
       this->get_logger(), "Vicon stream recovered: %.0f%% of %.0f Hz", 100.0 * delivered,
@@ -344,7 +331,7 @@ void Communicator::monitor_stream(unsigned int frame_number)
   status.level = stream_degraded_ ? diagnostic_msgs::msg::DiagnosticStatus::WARN
                                   : diagnostic_msgs::msg::DiagnosticStatus::OK;
   status.message = stream_degraded_ ? "degraded" : "ok";
-  auto kv = [&status](const string & k, double v) {
+  auto kv = [&status](const string& k, double v) {
     diagnostic_msgs::msg::KeyValue p;
     p.key = k;
     p.value = std::to_string(v);
@@ -369,10 +356,7 @@ void Communicator::get_frame()
   vicon_client.GetFrame();
   Output_GetFrameNumber frame_number = vicon_client.GetFrameNumber();
 
-  last_frame_ns_ = this->get_clock()->now().nanoseconds();
   monitor_stream(frame_number.FrameNumber);
-
-  cout << "frame number: " << frame_number.FrameNumber << endl;
 
   // Get the number of subjects in the frame
   unsigned int subject_count = vicon_client.GetSubjectCount().SubjectCount;
@@ -383,13 +367,11 @@ void Communicator::get_frame()
   string seen_subjects;
 
   // Iterate through each subject
-  for (unsigned int subject_index = 0; subject_index < subject_count; ++subject_index)
-  {
+  for (unsigned int subject_index = 0; subject_index < subject_count; ++subject_index) {
     // Get the subject name
     string subject_name = vicon_client.GetSubjectName(subject_index).SubjectName;
 
-    if (!origin_latched_)
-    {
+    if (!origin_latched_) {
       seen_subjects += (seen_subjects.empty() ? "" : ", ") + subject_name;
     }
 
@@ -397,8 +379,7 @@ void Communicator::get_frame()
     unsigned int segment_count = vicon_client.GetSegmentCount(subject_name).SegmentCount;
 
     // Iterate through each segment
-    for (unsigned int segment_index = 0; segment_index < segment_count; ++segment_index)
-    {
+    for (unsigned int segment_index = 0; segment_index < segment_count; ++segment_index) {
       // Get the segment name
       string segment_name = vicon_client.GetSegmentName(subject_name, segment_index).SegmentName;
 
@@ -429,15 +410,6 @@ void Communicator::get_frame()
       tf_msg.transform.rotation.z = quat.Rotation[2];
       tf_msg.transform.rotation.w = quat.Rotation[3];
 
-      cout << "Received segment data for " << subject_name << "/" << segment_name
-           << ": translation = [" << tf_msg.transform.translation.x << ", "
-           << tf_msg.transform.translation.y << ", "
-           << tf_msg.transform.translation.z << "], rotation = ["
-           << tf_msg.transform.rotation.x << ", "
-           << tf_msg.transform.rotation.y << ", "
-           << tf_msg.transform.rotation.z << ", "
-           << tf_msg.transform.rotation.w << "]" << endl;
-
       // Vicon reports a body it is not tracking as exactly (0,0,0). Do NOT use the SDK's
       // Occluded flags for this: they read false for an untracked body here, so they cannot be
       // trusted in either direction, and gating on them silently drops good data. The sentinel
@@ -447,8 +419,7 @@ void Communicator::get_frame()
                              tf_msg.transform.translation.y == 0.0 &&
                              tf_msg.transform.translation.z == 0.0);
 
-      if (!tracked)
-      {
+      if (!tracked) {
         RCLCPP_WARN_THROTTLE(
           this->get_logger(), *this->get_clock(), 2000,
           "'%s/%s' reads (0,0,0): vicon is not tracking it, so nothing is published for it",
@@ -458,23 +429,19 @@ void Communicator::get_frame()
       // Set the world origin from the drone's first tracked pose.
       if (!origin_latched_ && tracked &&
           (origin_subject == subject_name ||
-           origin_subject == subject_name + "/" + segment_name))
-      {
+           origin_subject == subject_name + "/" + segment_name)) {
         latch_origin(tf_msg.transform);
       }
 
       // Publish the position data
       boost::mutex::scoped_try_lock lock(mutex);
-      if (lock.owns_lock())
-      {
+      if (lock.owns_lock()) {
         // Check if a publisher exists for the segment
         pub_it = pub_map.find(subject_name + "/" + segment_name);
-        if (pub_it != pub_map.end())
-        {
-          Publisher &pub = pub_it->second;
+        if (pub_it != pub_map.end()) {
+          Publisher& pub = pub_it->second;
 
-          if (pub.is_ready && origin_latched_ && tracked)
-          {
+          if (pub.is_ready && origin_latched_ && tracked) {
             // Build a PoseStamped in the Vicon frame from the computed TransformStamped.
             geometry_msgs::msg::PoseStamped vicon_pose_msg;
 
@@ -499,27 +466,21 @@ void Communicator::get_frame()
             // Wrap the transformed pose as odometry. Vicon measures pose only, so twist is
             // left at zero rather than filled with a differentiated guess.
             nav_msgs::msg::Odometry odom_msg;
-            odom_msg.header = global_pose_msg.header;      // stamped in world_frame by doTransform
+            odom_msg.header = global_pose_msg.header; // stamped in world_frame by doTransform
             odom_msg.child_frame_id = tf_msg.child_frame_id;
             odom_msg.pose.pose = global_pose_msg.pose;
 
             pub.publish(odom_msg);
             cout << "Published vicon_pose_msg: [" << vicon_pose_msg.pose.position.x << ", " << vicon_pose_msg.pose.position.y << ", " << vicon_pose_msg.pose.position.z << "]" << endl;
           }
-        }
-        else
-        {
-          cout << "No publisher found for segment " << segment_name << ", creating one..." << endl;
+        } else {
           // Create a publisher if it doesn't exist, de-duplicating concurrent attempts
           std::string key = subject_name + "/" + segment_name;
-          if (pending_publishers.find(key) == pending_publishers.end())
-          {
+          if (pending_publishers.find(key) == pending_publishers.end()) {
             pending_publishers.insert(key);
             lock.unlock();
             create_publisher(subject_name, segment_name);
-          }
-          else
-          {
+          } else {
             // Another thread is already creating this publisher
             lock.unlock();
           }
@@ -531,8 +492,7 @@ void Communicator::get_frame()
     }
   }
 
-  if (!origin_latched_)
-  {
+  if (!origin_latched_) {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 2000,
       "Waiting for a clean pose of '%s'; nothing published yet. Subjects seen: [%s]",
@@ -566,7 +526,7 @@ void Communicator::create_publisher_thread(const string subject_name, const stri
 }
 
 // Main function
-int main(int argc, char **argv)
+int main(int argc, char** argv)
 {
   // Initialize the ROS 2 node
   rclcpp::init(argc, argv);
@@ -576,8 +536,7 @@ int main(int argc, char **argv)
   node->connect();
 
   // Continuously retrieve frames while ROS 2 is running
-  while (rclcpp::ok())
-  {
+  while (rclcpp::ok()) {
     node->get_frame();
   }
 
