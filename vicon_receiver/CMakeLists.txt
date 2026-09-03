@@ -12,6 +12,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -114,6 +116,8 @@ target_link_libraries(vicon_client
 ament_target_dependencies(vicon_client 
   rclcpp
   geometry_msgs
+  nav_msgs
+  diagnostic_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs

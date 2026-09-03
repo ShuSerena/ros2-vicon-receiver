@@ -46,6 +46,12 @@ def generate_launch_description():
         default_value='false',
         description='Whether RPY values are in degrees (true) or radians (false)'
     )
+    origin_subject_arg = DeclareLaunchArgument(
+        'origin_subject',
+        default_value='',
+        description='Vicon subject name of the drone; its pose at startup becomes the world '
+                    'origin. Required.'
+    )
 
     # Get launch configuration values
     hostname = LaunchConfiguration('hostname')
@@ -56,6 +62,7 @@ def generate_launch_description():
     map_xyz = LaunchConfiguration('map_xyz')
     map_rpy = LaunchConfiguration('map_rpy')
     map_rpy_in_degrees = LaunchConfiguration('map_rpy_in_degrees')
+    origin_subject = LaunchConfiguration('origin_subject')
 
     return LaunchDescription([
         # Launch arguments
@@ -67,6 +74,7 @@ def generate_launch_description():
         map_xyz_arg,
         map_rpy_arg,
         map_rpy_in_degrees_arg,
+        origin_subject_arg,
         
         # Node
         Node(
@@ -81,7 +89,8 @@ def generate_launch_description():
                 'vicon_frame': vicon_frame,
                 'map_xyz': map_xyz,
                 'map_rpy': map_rpy,
-                'map_rpy_in_degrees': map_rpy_in_degrees
+                'map_rpy_in_degrees': map_rpy_in_degrees,
+                'origin_subject': origin_subject
             }]
         )
     ])
